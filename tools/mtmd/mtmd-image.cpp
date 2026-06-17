@@ -116,6 +116,7 @@ struct img_tool {
         // applied before min/max_pixels, so min_pixels can push an edge back above longest_edge
         int longest_edge = 0; // 0 = disabled
         bool round_half_even = false; // Python round() instead of std::round
+        bool round_up = false; // initial alignment uses ceil instead of nearest (e.g. LocateAnything)
     };
 
     // calculate the size of the **resized** image, while preserving the aspect ratio and
@@ -143,8 +144,8 @@ struct img_tool {
             h_bar = ceil_by_factor(height * scale);
         } else {
             // always align up first
-            w_bar = std::max(opts.align_size, round_by_factor(width));
-            h_bar = std::max(opts.align_size, round_by_factor(height));
+            w_bar = std::max(opts.align_size, opts.round_up ? ceil_by_factor(width)  : round_by_factor(width));
+            h_bar = std::max(opts.align_size, opts.round_up ? ceil_by_factor(height) : round_by_factor(height));
         }
 
         if (opts.max_pixels > 0 && h_bar * w_bar > opts.max_pixels) {
@@ -804,6 +805,7 @@ clip_image_size mtmd_image_preprocessor_dyn_size::get_target_size(const clip_hpa
             /* max_pixels      */ hparams.image_max_pixels,
             /* longest_edge    */ 0,
             /* round_half_even */ hparams.image_round_half_even,
+            /* round_up        */ hparams.image_resize_round_up,
         });
 }
 
