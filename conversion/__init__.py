@@ -366,6 +366,7 @@ MMPROJ_MODEL_MAP: dict[str, str] = {
     "Lfm3OmniForConditionalGeneration": "lfm3",
     "Lfm3VlForConditionalGeneration": "lfm3",
     "LightOnOCRForConditionalGeneration": "lighton_ocr",
+    "LocateAnythingForConditionalGeneration": "locateanything",
     "Llama4ForConditionalGeneration": "llama4",
     "LlavaForConditionalGeneration": "llava",
     "MERaLiON2ForConditionalGeneration": "ultravox",
