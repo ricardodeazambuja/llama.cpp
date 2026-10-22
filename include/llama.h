@@ -410,7 +410,8 @@ extern "C" {
         // which softmax is invariant to). currently only supported when type_k == GGML_TYPE_Q4_0.
         // see tools/kv-mean-center to generate this file and docs/kv-mean-center.md for details.
         const char * path_kv_mean_center;
-        size_t moe_cache_size; // device cache in bytes for the experts kept in host memory, split among the devices like the layers, 0 = disabled [EXPERIMENTAL]
+        size_t moe_cache_size;      // device cache in bytes for the experts kept in host memory, split among the devices like the layers, 0 = disabled [EXPERIMENTAL]
+        float  moe_cache_cpu_share; // share of the MoE cache misses computed on the CPU instead of uploaded, 0 = all uploaded [EXPERIMENTAL]
 
         // Abort callback
         // if it returns true, execution of llama_decode() will be aborted

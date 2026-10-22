@@ -611,7 +611,8 @@ struct common_params {
     // path to a K-cache mean-centering bias file (GGUF), or empty to disable.
     // only takes effect when cache_type_k == GGML_TYPE_Q4_0; see docs/kv-mean-center.md
     std::string kv_mean_center_path = "";
-    size_t moe_cache_size = 0; // GPU cache size in bytes for the MoE experts kept in the CPU, split among the GPUs like the layers
+    size_t moe_cache_size      = 0;    // GPU cache size in bytes for the MoE experts kept in the CPU, split among the GPUs like the layers
+    float  moe_cache_cpu_share = 0.0f; // share of the MoE cache misses computed on the CPU instead of uploaded
 
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 
