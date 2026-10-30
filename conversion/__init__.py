@@ -18,6 +18,7 @@ __all__ = [
 
 TEXT_MODEL_MAP: dict[str, str] = {
     "NEOChatModel": "sensenova_u1",
+    "DoryForCausalLM": "dory",
     "AfmoeForCausalLM": "afmoe",
     "LagunaForCausalLM": "laguna",
     "FlintForCausalLM": "flint",
