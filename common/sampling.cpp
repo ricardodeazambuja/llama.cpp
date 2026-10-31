@@ -11,6 +11,7 @@
 #include <cctype>
 #include <climits>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <unordered_map>
@@ -697,7 +698,24 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
 
     size_t i = 0;
     for (; i < draft.size(); i++) {
-        const llama_token id = common_sampler_sample(gsmpl, ctx, idxs[i], grammar_first);
+        llama_token id = common_sampler_sample(gsmpl, ctx, idxs[i], grammar_first);
+
+        // experiment: keep a drafted token the target finds nearly as likely as its top choice
+        static const float relax = [] { const char * e = getenv("LLAMA_SPEC_RELAX"); return e ? (float) atof(e) : 0.0f; }();
+        if (relax > 0.0f && draft[i] != id && !grammar_should_apply(gsmpl)) {
+            const auto * cur_p = common_sampler_get_candidates(gsmpl, true);
+            float p_max = 0.0f;
+            float p_dft = 0.0f;
+            for (size_t k = 0; k < cur_p->size; ++k) {
+                p_max = std::max(p_max, cur_p->data[k].p);
+                if (cur_p->data[k].id == draft[i]) {
+                    p_dft = cur_p->data[k].p;
+                }
+            }
+            if (p_dft > 0.0f && p_dft >= relax * p_max) {
+                id = draft[i];
+            }
+        }
 
         common_sampler_accept(gsmpl, id, true);
 
