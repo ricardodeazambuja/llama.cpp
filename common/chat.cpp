@@ -1346,9 +1346,11 @@ static common_chat_params_init_fn common_chat_template_detect_params_init(const 
         return common_chat_params_init_lfm2_tokens;
     }
 
-    // LFM2.5 format detection: template uses plain "List of tools: [...]" with no special tokens
-    if (src.find("List of tools: [") != std::string::npos &&
-        src.find("<|tool_list_start|>") == std::string::npos) {
+    // LFM2.5 format detection: template uses plain "List of tools: [...]" with no special tokens.
+    // The VL template builds it as "List of tools: " + (tools | tojson), so there's no bracket to match.
+    const bool lfm25_tools = src.find("List of tools: [") != std::string::npos ||
+        (src.find("List of tools: ") != std::string::npos && src.find("<|tool_call_start|>") != std::string::npos);
+    if (lfm25_tools && src.find("<|tool_list_start|>") == std::string::npos) {
         LOG_DBG("Using specialized template: LFM2.5\n");
         return common_chat_params_init_lfm2_5;
     }
