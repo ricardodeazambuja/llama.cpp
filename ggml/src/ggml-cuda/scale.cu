@@ -27,6 +27,23 @@ static __global__ void scale_f32(const T * x, T * dst, const float scale, const 
     dst[i_dst] = ggml_cuda_cast<T>(scale * ggml_cuda_cast<float>(x[i_src]) + bias);
 }
 
+static __global__ void scale_f32_vec4(
+        const float4 * x, float4 * dst, const float scale, const float bias, const int64_t nelements4) {
+    ggml_cuda_pdl_lc();
+    const int64_t tid = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    const int64_t stride = (int64_t) blockDim.x * gridDim.x;
+
+    ggml_cuda_pdl_sync();
+    for (int64_t i = tid; i < nelements4; i += stride) {
+        const float4 v = x[i];
+        dst[i] = make_float4(
+            scale * v.x + bias,
+            scale * v.y + bias,
+            scale * v.z + bias,
+            scale * v.w + bias);
+    }
+}
+
 template <typename T>
 static void scale_f32_cuda(const T * x, T * dst, const float scale, const float bias, const ggml_tensor * src0, const ggml_tensor * t, cudaStream_t stream) {
     const int64_t k  = ggml_nelements(src0);
