@@ -330,7 +330,8 @@ struct llama_moe_cache::impl {
         size_t pos;               // position in stash_buf
     };
 
-    static constexpr int64_t max_batch = 32;
+    // batches up to max_batch tokens use the cache (and its CPU share), larger ones upload the experts they use
+    const int64_t max_batch = getenv("LLAMA_MOE_CACHE_MAX_BATCH") ? atoll(getenv("LLAMA_MOE_CACHE_MAX_BATCH")) : 32;
 
     int32_t n_expert_used;
 
