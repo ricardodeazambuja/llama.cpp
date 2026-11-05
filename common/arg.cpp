@@ -2816,6 +2816,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_MOE_CACHE_CPU_SHARE"));
     add_opt(common_arg(
+        {"--moe-cache-max-batch"}, "N",
+        "largest ubatch in tokens that uses the MoE cache (and its CPU share); larger ubatches upload the experts they use (default: 32)",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.moe_cache_max_batch = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_CACHE_MAX_BATCH"));
+    add_opt(common_arg(
         {"-ncffn", "--n-cpu-ffn"}, "N",
         "keep the dense FFN weights of the first N layers in the CPU\n"
         "(dense models; for MoE expert weights use --n-cpu-moe)",

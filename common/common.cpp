@@ -1817,6 +1817,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.path_kv_mean_center = params.kv_mean_center_path.empty() ? nullptr : params.kv_mean_center_path.c_str();
     cparams.moe_cache_size      = params.moe_cache_size;
     cparams.moe_cache_cpu_share = params.moe_cache_cpu_share;
+    cparams.moe_cache_max_batch = params.moe_cache_max_batch;
 
     return cparams;
 }

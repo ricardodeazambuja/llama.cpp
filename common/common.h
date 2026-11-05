@@ -613,6 +613,7 @@ struct common_params {
     std::string kv_mean_center_path = "";
     size_t moe_cache_size      = 0;    // GPU cache size in bytes for the MoE experts kept in the CPU, split among the GPUs like the layers
     float  moe_cache_cpu_share = 0.0f; // share of the MoE cache misses computed on the CPU instead of uploaded
+    int32_t moe_cache_max_batch = 0;   // largest ubatch that uses the MoE cache, 0 = default (32)
 
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 

@@ -6,8 +6,11 @@ When the experts of MoE layers stay in host memory (`-cmoe`, `-ncmoe`, `-ot`), t
 |---|---|
 | `--moe-cache-mib N` | cache size in MiB, split among the GPUs like the layers (default: 0, disabled) |
 | `--moe-cache-cpu-share F` | share of the cache misses computed on the CPU from the host experts instead of uploaded, once the cache is full (default: 0) |
+| `--moe-cache-max-batch N` | largest ubatch in tokens that uses the cache and its CPU share, larger ones upload the experts they use (default: 32) |
 
 The cache hits run on the device. With `--moe-cache-cpu-share F` the CPU computes a share `F` of the misses while the device computes the hits and uploads the other misses into the cache. This is faster when the CPU reads the host experts faster than the device can upload them, for example with fast RAM, a PCIe 4 link or experts that are not in pinned memory. The host experts are pinned with `-lm none`, `-lm mlock` and `-lm dio`, unless `--no-host`, but not when they are mmap'd (the default). The device uploads pinned experts at the full speed of the link, so the CPU share often does not help then. Until the cache is full every miss is uploaded, so the cache fills as fast as without the CPU share. The best share depends on the machine, the model and the cache size.
+
+A ubatch of more than `--moe-cache-max-batch` tokens uploads every expert it uses, so its cost hardly depends on its size: a few hundred tokens already use most experts of a layer. A smaller ubatch reads the cache and, with the CPU share, computes most misses on the CPU. Raising the limit helps short prompts such as the new tokens of an agent turn. It hurts above the size where uploading everything is faster than the CPU, and those batches also evict the experts used in generation. On an RTX 2070 Max-Q (PCIe 3.0 x8) with Qwen3.8-35B-A3B, `-ub 2048`, a 2900 MiB cache and share 0.95, `--moe-cache-max-batch 256` cut the prefill of 48 to 200 new tokens by 29 to 42% and left longer prompts and generation unchanged; 512 made 512-token ubatches 15% slower.
 
 ## Picking the arguments
 
