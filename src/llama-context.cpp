@@ -1931,6 +1931,13 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
     }
 
+    // update the MoE cache with the CPU parts accumulated during the graph build
+    if (moe_cache) {
+        for (const auto & cpu_part : res->get_cpu_parts()) {
+            moe_cache->set_cpu_part(cpu_part.lookup, cpu_part.n_used, cpu_part.inputs);
+        }
+    }
+
     const int64_t t_cs2 = chain_stats ? ggml_time_us() : 0;
 
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
