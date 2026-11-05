@@ -36,6 +36,7 @@ struct moe_cache_slru {
     std::vector<bool> is_protected;
     int32_t n_protected = 0;
     int32_t n_filled    = 0; // slots that hold an expert
+    int32_t n_warm      = 0; // filled slots that are still warm (not used by a small batch yet)
 
     // warm slots were filled by a large batch and no small batch has used them yet, they can be refilled by a later large batch
     std::vector<bool>     warm;     // [n_slots]
@@ -104,6 +105,15 @@ struct moe_cache_slru {
     }
 
     int32_t victim(int32_t il) const {
+        // warm slots first: the experts of a large batch that no small batch has used
+        if (n_warm > 0) {
+            for (int32_t s = head[0]; s >= 0; s = next[s]) {
+                const int32_t key = key_of[s];
+                if (warm[s] && (key / n_expert != il || seen[key % n_expert] != seen_gen)) {
+                    return s;
+                }
+            }
+        }
         for (int segment = 0; segment < 2; ++segment) {
             for (int32_t s = head[segment]; s >= 0; s = next[s]) {
                 const int32_t key = key_of[s];
@@ -155,7 +165,10 @@ struct moe_cache_slru {
         for (int32_t e : uniq) {
             if (slots[e] < n_slots) {
                 touch(slots[e]);
-                warm[slots[e]] = false;
+                if (warm[slots[e]]) {
+                    warm[slots[e]] = false;
+                    n_warm--;
+                }
                 n_hit++;
             } else {
                 misses.push_back(e);
@@ -213,10 +226,13 @@ struct moe_cache_slru {
             } else {
                 n_filled++;
             }
+            if (warm[s]) {
+                warm[s] = false;
+                n_warm--;
+            }
             key_of[s] = il*n_expert + e;
             slots[e] = s;
             move(s, false);
-            warm[s] = false;
             fills.push_back({ e, s });
         }
         return true;
@@ -782,6 +798,7 @@ struct llama_moe_cache::impl {
                     c.key_of[s] = -1;
                     c.warm[s]   = false;
                     c.n_filled--;
+                    c.n_warm--;
                 }
                 c.warm_gen[s] = gen;
                 l.warm_fills.push_back({ e, s });
@@ -814,6 +831,7 @@ struct llama_moe_cache::impl {
                 slots[f.expert]  = f.slot;
                 c.warm[f.slot]   = true;
                 c.n_filled++;
+                c.n_warm++;
                 c.move(f.slot, false);
             }
             stats_warm.hits += l.warm_fills.size();
@@ -900,7 +918,7 @@ struct llama_moe_cache::impl {
         }
 
         // part of the misses is computed on the CPU once the cache is full, the carry keeps the share right on average
-        const uint32_t share_q = has_cpu && g.slru.n_filled == g.slru.n_slots ? cpu_share_q : 0;
+        const uint32_t share_q = has_cpu && g.slru.n_filled - g.slru.n_warm == g.slru.n_slots ? cpu_share_q : 0;
         auto n_cpu = [&](size_t n_miss) {
             const uint64_t acc = (uint64_t) n_miss*share_q + l.cpu_acc;
             l.cpu_acc = acc & 0xffff;
