@@ -410,11 +410,13 @@ private:
         const ggml_tensor *  ids = nullptr;
         std::vector<int32_t> ids_data;
         std::vector<bool>    used;
+        std::vector<int32_t> count; // tokens per expert, for the MoE cache warm-up
 
         void reset() {
             ids = nullptr;
             ids_data.clear();
             used.clear();
+            count.clear();
         }
     };
 

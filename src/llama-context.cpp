@@ -3285,11 +3285,13 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         ggml_backend_synchronize(backend);
 
         st.used.assign(n_expert, false);
+        st.count.assign(n_expert, 0);
         for (int64_t i1 = 0; i1 < ids->ne[1]; i1++) {
             for (int64_t i0 = 0; i0 < ids->ne[0]; i0++) {
                 const int32_t id = st.ids_data[i1*ids->nb[1]/sizeof(int32_t) + i0*ids->nb[0]/sizeof(int32_t)];
                 GGML_ASSERT(id >= 0 && id < n_expert);
                 st.used[id] = true;
+                st.count[id]++;
             }
         }
 
@@ -3331,6 +3333,11 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         }
 
         first = last + 1;
+    }
+
+    // keep the most used of the uploaded experts in the free slots of the MoE cache
+    if (lctx->moe_cache) {
+        lctx->moe_cache->warm_experts(backend, src, dst, st.count);
     }
 
     return true;

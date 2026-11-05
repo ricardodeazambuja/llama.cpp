@@ -37,6 +37,10 @@ struct moe_cache_slru {
     int32_t n_protected = 0;
     int32_t n_filled    = 0; // slots that hold an expert
 
+    // warm slots were filled by a large batch and no small batch has used them yet, they can be refilled by a later large batch
+    std::vector<bool>     warm;     // [n_slots]
+    std::vector<uint32_t> warm_gen; // [n_slots] last graph that picked the slot for warm-up
+
     std::vector<uint32_t> seen; // [n_expert]
     uint32_t seen_gen = 0;
     std::vector<int32_t> uniq;
@@ -58,6 +62,8 @@ struct moe_cache_slru {
         head[0] = 0;
         tail[0] = n_slots - 1;
         is_protected.assign(n_slots, false);
+        warm.assign(n_slots, false);
+        warm_gen.assign(n_slots, 0);
         seen.assign(n_expert, 0);
     }
 
@@ -149,6 +155,7 @@ struct moe_cache_slru {
         for (int32_t e : uniq) {
             if (slots[e] < n_slots) {
                 touch(slots[e]);
+                warm[slots[e]] = false;
                 n_hit++;
             } else {
                 misses.push_back(e);
@@ -209,6 +216,7 @@ struct moe_cache_slru {
             key_of[s] = il*n_expert + e;
             slots[e] = s;
             move(s, false);
+            warm[s] = false;
             fills.push_back({ e, s });
         }
         return true;
@@ -278,6 +286,11 @@ struct llama_moe_cache::impl {
         std::vector<int32_t> cpu_experts;   // experts set in cpu_map
         uint32_t cpu_acc = 0;               // fraction of a miss carried over to the next plan, in 1/65536
         std::vector<ggml_tensor *> experts; // host expert tensors, in the order of the banks
+
+        // experts that warm_experts keeps in this graph, they enter the slot map when all banks have them
+        std::vector<moe_cache_slru::fill> warm_fills;
+        uint32_t warm_gen  = 0;
+        uint32_t warm_done = 0; // bit ip: bank ip has the experts of warm_fills
     };
 
     struct binding {
@@ -308,6 +321,10 @@ struct llama_moe_cache::impl {
     stats stats_small; // up to 8 tokens per ubatch
     stats stats_large;
     stats stats_copy;  // experts copied from the cache for large batches
+    stats stats_warm;  // experts kept in the cache by large batches
+
+    uint32_t gen = 0; // graph computes, for warm_experts
+    bool warm_enabled = getenv("LLAMA_MOE_CACHE_NO_WARM") == nullptr;
 
     std::vector<device> devices;
     std::vector<group> groups;
@@ -710,6 +727,98 @@ struct llama_moe_cache::impl {
 
     void begin() {
         stash.clear();
+        gen++;
+    }
+
+    void warm_experts(ggml_backend_t backend, const ggml_tensor * w, const ggml_tensor * dst, const std::vector<int32_t> & count) {
+        const auto it = bindings.find(w);
+        if (!warm_enabled || it == bindings.end()) {
+            return;
+        }
+        const binding & b = it->second;
+        layer & l = layers[b.il];
+        group & g = groups[l.ig];
+        moe_cache_slru & c = g.slru;
+        int32_t * slots = c.slot_map[b.il];
+        if (backend != devices[g.id].backend || slots == nullptr || (int64_t) count.size() != c.n_expert) {
+            return;
+        }
+
+        // the first bank of the layer in this graph picks the experts: the most used ones, up to an even share of the slots
+        if (l.warm_gen != gen) {
+            l.warm_gen  = gen;
+            l.warm_done = 0;
+            l.warm_fills.clear();
+
+            std::vector<int32_t> order;
+            for (int32_t e = 0; e < c.n_expert; ++e) {
+                if (count[e] > 0) {
+                    order.push_back(e);
+                }
+            }
+            std::stable_sort(order.begin(), order.end(), [&](int32_t a, int32_t b) { return count[a] > count[b]; });
+
+            int32_t quota = std::max<int32_t>(1, g.n_slots / (int32_t) g.layers.size());
+            int32_t s = c.head[0];
+            for (int32_t e : order) {
+                if (quota == 0) {
+                    break;
+                }
+                quota--;
+                if (slots[e] < g.n_slots) {
+                    c.warm_gen[slots[e]] = gen; // other layers of this graph do not take it
+                    continue;
+                }
+                // an empty or warm slot not picked in this graph, the least recently used first
+                while (s >= 0 && !((c.key_of[s] < 0 || c.warm[s]) && c.warm_gen[s] != gen)) {
+                    s = c.next[s];
+                }
+                if (s < 0) {
+                    break;
+                }
+                if (c.key_of[s] >= 0) {
+                    const int32_t key = c.key_of[s];
+                    c.slot_map[key / c.n_expert][key % c.n_expert] = c.empty;
+                    c.key_of[s] = -1;
+                    c.warm[s]   = false;
+                    c.n_filled--;
+                }
+                c.warm_gen[s] = gen;
+                l.warm_fills.push_back({ e, s });
+                s = c.next[s];
+            }
+        }
+
+        const uint32_t bit = 1u << b.ip;
+        if (l.warm_fills.empty() || (l.warm_done & bit)) {
+            return;
+        }
+
+        // dst has every used expert of w, copy the kept ones to their slots
+        ggml_tensor * bank = g.banks[b.ip];
+        ggml_tensor * src  = const_cast<ggml_tensor *>(dst);
+        for (const auto & f : l.warm_fills) {
+            ggml_reset(ctx_views.get());
+            ggml_tensor * src_view = ggml_view_3d(ctx_views.get(), src,  src->ne[0],  src->ne[1],  1, src->nb[1],  src->nb[2],  f.expert*src->nb[2]);
+            ggml_tensor * dst_view = ggml_view_3d(ctx_views.get(), bank, bank->ne[0], bank->ne[1], 1, bank->nb[1], bank->nb[2], f.slot*bank->nb[2]);
+            ggml_backend_view_init(src_view);
+            ggml_backend_view_init(dst_view);
+            ggml_backend_tensor_copy_async(backend, backend, src_view, dst_view);
+            stats_warm.bytes += ggml_nbytes(src_view);
+        }
+        l.warm_done |= bit;
+
+        if (l.warm_done + 1 == 1u << l.experts.size()) {
+            for (const auto & f : l.warm_fills) {
+                c.key_of[f.slot] = b.il*c.n_expert + f.expert;
+                slots[f.expert]  = f.slot;
+                c.warm[f.slot]   = true;
+                c.n_filled++;
+                c.move(f.slot, false);
+            }
+            stats_warm.hits += l.warm_fills.size();
+            l.warm_fills.clear();
+        }
     }
 
     bool copy(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph) {
@@ -856,6 +965,9 @@ struct llama_moe_cache::impl {
         if (stats_copy.hits > 0) {
             LLAMA_LOG_INFO("llama_moe_cache: large batches: %zu experts copied from the cache, %.2f MiB\n", stats_copy.hits, stats_copy.bytes/1024.0/1024.0);
         }
+        if (stats_warm.hits > 0) {
+            LLAMA_LOG_INFO("llama_moe_cache: large batches: %zu experts kept in free slots, %.2f MiB\n", stats_warm.hits, stats_warm.bytes/1024.0/1024.0);
+        }
     }
 };
 
@@ -895,6 +1007,10 @@ void llama_moe_cache::begin() {
 
 bool llama_moe_cache::copy(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph) {
     return pimpl->copy(backend, src, dst, graph);
+}
+
+void llama_moe_cache::warm_experts(ggml_backend_t backend, const ggml_tensor * w, const ggml_tensor * dst, const std::vector<int32_t> & count) {
+    pimpl->warm_experts(backend, w, dst, count);
 }
 
 int64_t llama_moe_cache::copy_experts(ggml_backend_t backend, const ggml_tensor * w, ggml_tensor * dst, int64_t e, int64_t last) {
