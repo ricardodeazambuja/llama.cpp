@@ -9,7 +9,7 @@
 //      comparison isn't confounded by actual quantization error -- this test is a pure math
 //      check of the softmax-invariance argument, not a quantization-fidelity measurement.
 //
-// Uses the same tiny-synthetic-model machinery as test-llama-archs.cpp (llama_model_saver +
+// Uses the same tiny-synthetic-model machinery as test-llama-archs.cpp (a GGUF key writer +
 // llama_model_init_from_user with a deterministic random tensor initializer), trimmed down to
 // just the plain LLM_ARCH_LLAMA case.
 
@@ -18,11 +18,10 @@
 #include "log.h"
 #include "llama.h"
 #include "llama-cpp.h"
+#include "gguf.h"
 
-// TODO: replace with #include "llama-ext.h" in the future
-#include "../src/llama-arch.h"
+#include "../src/llama-ext.h"
 #include "../src/llama-kv-cache.h"
-#include "../src/llama-model-saver.h"
 
 #include <cmath>
 #include <cstdio>
@@ -54,15 +53,33 @@ static void set_tensor_data(struct ggml_tensor * tensor, void * userdata) {
     ggml_backend_tensor_set(tensor, tmp.data(), 0, ggml_nbytes(tensor));
 }
 
+// writes arch-resolved GGUF keys, the test-side equivalent of llama_model_saver (see
+// test-llama-archs.cpp), trimmed to the value types used below
+struct kv_writer {
+    struct gguf_context * gguf_ctx;
+    const llm_arch        arch;
+
+    kv_writer(enum llm_arch arch, struct gguf_context * gguf_ctx) : gguf_ctx(gguf_ctx), arch(arch) {}
+
+    void add_kv(enum llm_kv key, uint32_t     value) { gguf_set_val_u32 (gguf_ctx, llama_arch_kv_name(arch, key).c_str(), value); }
+    void add_kv(enum llm_kv key, float        value) { gguf_set_val_f32 (gguf_ctx, llama_arch_kv_name(arch, key).c_str(), value); }
+    void add_kv(enum llm_kv key, bool         value) { gguf_set_val_bool(gguf_ctx, llama_arch_kv_name(arch, key).c_str(), value); }
+    void add_kv(enum llm_kv key, const char * value) { gguf_set_val_str (gguf_ctx, llama_arch_kv_name(arch, key).c_str(), value); }
+
+    void add_kv(enum llm_kv key, const std::vector<uint32_t> & value) {
+        gguf_set_arr_data(gguf_ctx, llama_arch_kv_name(arch, key).c_str(), GGUF_TYPE_UINT32, value.data(), value.size());
+    }
+};
+
 // minimal metadata for a tiny 2-layer LLM_ARCH_LLAMA model (trimmed from test-llama-archs.cpp's
 // generic per-arch metadata builder, dropping everything that only applies to other archs)
 static gguf_context_ptr build_llama_gguf_ctx() {
     gguf_context_ptr ret(gguf_init_empty());
-    llama_model_saver ms(LLM_ARCH_LLAMA, ret.get());
+    kv_writer ms(LLM_ARCH_LLAMA, ret.get());
 
     const uint32_t n_embd_head = k_n_embd / k_n_head;
 
-    ms.add_kv(LLM_KV_GENERAL_ARCHITECTURE,      llm_arch_name(LLM_ARCH_LLAMA));
+    ms.add_kv(LLM_KV_GENERAL_ARCHITECTURE,      llama_arch_name(LLM_ARCH_LLAMA));
     ms.add_kv(LLM_KV_VOCAB_SIZE,                k_n_vocab);
     ms.add_kv(LLM_KV_CONTEXT_LENGTH,            k_n_ctx);
     ms.add_kv(LLM_KV_EMBEDDING_LENGTH,          k_n_embd);
