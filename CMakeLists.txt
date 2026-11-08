@@ -4,7 +4,7 @@ include(CheckIncludeFileCXX)
 
 ### llama.cpp version
 set(LLAMA_VERSION_MAJOR 0)
-set(LLAMA_VERSION_MINOR 7)
+set(LLAMA_VERSION_MINOR 9)
 set(LLAMA_VERSION_PATCH 0)
 set(LLAMA_VERSION_BASE "${LLAMA_VERSION_MAJOR}.${LLAMA_VERSION_MINOR}.${LLAMA_VERSION_PATCH}")
 
@@ -153,6 +153,7 @@ option(LLAMA_DSPARK_MARKOV_METAL "llama-common: build Metal dspark Markov resamp
 # Required for relocatable CMake package
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/build-info.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/common.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/win-app.cmake)
 
 if (NOT DEFINED LLAMA_BUILD_NUMBER)
     set(LLAMA_BUILD_NUMBER        ${BUILD_NUMBER})
@@ -271,6 +272,8 @@ option(LLAMA_BUILD_MTMD "llama: build tools/mtmd library standalone" OFF)
 if (LLAMA_BUILD_MTMD AND NOT (LLAMA_BUILD_COMMON AND LLAMA_BUILD_TOOLS))
     add_subdirectory(tools/mtmd)
 endif()
+
+llama_apply_app_manifests()
 
 #
 # install

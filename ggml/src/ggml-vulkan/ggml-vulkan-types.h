@@ -486,6 +486,15 @@ static constexpr uint32_t num_topk_moe_pipelines = 10;
 
 static constexpr uint32_t num_topk_pipelines = 11;
 
+// FWHT block widths with a dedicated pipeline. The subgroup shader keeps n/subgroup_size
+// values per invocation, so widths above fwht_max_subgroup_n, or a subgroup narrow enough to
+// exceed fwht_max_subgroup_el_w values, use the shared-memory shader with one row per
+// workgroup instead.
+static constexpr uint32_t num_fwht_pipelines     = 8;
+static constexpr uint32_t fwht_max_subgroup_n    = 512;
+static constexpr uint32_t fwht_max_subgroup_el_w = 64;
+static constexpr uint32_t fwht_rows              = 4;
+
 static constexpr std::initializer_list<ggml_op> topk_moe_early_softmax_norm{ GGML_OP_SOFT_MAX, GGML_OP_RESHAPE,  GGML_OP_ARGSORT,
                                                                              GGML_OP_VIEW,     GGML_OP_GET_ROWS, GGML_OP_RESHAPE,
                                                                              GGML_OP_SUM_ROWS, GGML_OP_CLAMP,    GGML_OP_DIV,
@@ -658,16 +667,6 @@ static constexpr std::array<ggml_type, 9> lightning_indexer_k_types = {
 
 class vk_memory_logger;
 
-// FWHT block widths with a dedicated Vulkan pipeline. The subgroup shader pins its
-// block to the subgroup width, so it keeps n/subgroup_size values per invocation;
-// widths that push that past GGML_VK_FWHT_MAX_SUBGROUP_EL_W stage through shared
-// memory instead. The cutoff has to key on that ratio and not on n alone, because a
-// device reporting a narrow subgroup reaches the same register wall at a smaller n.
-static constexpr uint32_t GGML_VK_FWHT_NUM_SIZES         = 8;
-static constexpr uint32_t GGML_VK_FWHT_MAX_SUBGROUP_N    = 2048;
-static constexpr uint32_t GGML_VK_FWHT_MAX_SUBGROUP_EL_W = 64;
-static constexpr uint32_t GGML_VK_FWHT_ROWS              = 4;
-
 struct vk_device_struct {
     std::recursive_mutex mutex;
     std::mutex queue_submit_mutex;
@@ -689,6 +688,7 @@ struct vk_device_struct {
     uint64_t suballocation_block_size;
     uint64_t min_imported_host_pointer_alignment;
     bool external_memory_host {};
+    bool external_semaphore {};
     bool fp16;
     bool bf16;
     bool pipeline_robustness;
@@ -707,6 +707,7 @@ struct vk_device_struct {
     uint32_t subgroup_size_log2;
     uint32_t shader_core_count;
     bool uma;
+    bool rebar;
     bool prefer_host_memory;
     bool float_controls_rte_fp16;
     bool float_controls_denorm_preserve_fp16;
@@ -944,11 +945,10 @@ struct vk_device_struct {
     vk_pipeline pipeline_sum_rows_f32;
     vk_pipeline pipeline_cross_entropy_loss_f32, pipeline_cross_entropy_loss_f32_wg512;
     vk_pipeline pipeline_cross_entropy_loss_back_f32, pipeline_cross_entropy_loss_back_f32_wg512;
-    vk_pipeline pipeline_fwht_signed_f32[GGML_VK_FWHT_NUM_SIZES];
-    vk_pipeline pipeline_fwht_f32[GGML_VK_FWHT_NUM_SIZES];
-    vk_pipeline pipeline_fwht_f16[GGML_VK_FWHT_NUM_SIZES];
-    // rows a workgroup covers, chosen per width when the pipeline is built
-    uint32_t fwht_rows_per_wg[GGML_VK_FWHT_NUM_SIZES] = {};
+    vk_pipeline pipeline_fwht_signed_f32[num_fwht_pipelines];
+    vk_pipeline pipeline_fwht_f32[num_fwht_pipelines];
+    vk_pipeline pipeline_fwht_f16[num_fwht_pipelines];
+    uint32_t    fwht_rows_per_wg[num_fwht_pipelines] = {};
     vk_pipeline pipeline_cumsum_f32;
     vk_pipeline pipeline_cumsum_small_f32;
     vk_pipeline pipeline_cumsum_multipass1_f32;
@@ -1020,6 +1020,9 @@ struct vk_device_struct {
     ggml_backend_buffer_type buffer_type;
 
     bool disable_fusion;
+    std::atomic<bool> fusion_stats_enabled {false};
+    std::mutex fusion_mutex;
+    std::map<std::string, uint64_t> fusion_counts;
     bool disable_descriptor_reuse;
     std::atomic<uint64_t> buffer_destroy_count {};
     bool disable_host_visible_vidmem;
@@ -1101,6 +1104,9 @@ struct vk_submission {
     vk_command_buffer* buffer = nullptr;
     std::vector<vk_semaphore> wait_semaphores;
     std::vector<vk_semaphore> signal_semaphores;
+    // submit waits until *ready >= ready_value
+    const std::atomic<uint64_t> * ready = nullptr;
+    uint64_t ready_value = 0;
 };
 
 typedef std::vector<vk_submission> vk_sequence;
@@ -1239,7 +1245,7 @@ struct ggml_backend_vk_context {
 
     vk_device device;
 
-    size_t semaphore_idx, event_idx;
+    size_t semaphore_idx, binary_semaphore_idx, event_idx;
     ggml_vk_garbage_collector gc;
     size_t prealloc_size_x, prealloc_size_y, prealloc_size_split_k, prealloc_size_add_rms_partials, prealloc_size_add_rms_partials_offset;
     vk_buffer prealloc_x, prealloc_y, prealloc_split_k, prealloc_add_rms_partials, sync_staging;
@@ -1356,6 +1362,7 @@ struct vk_instance_t {
     uint32_t host_import_failed = 0;  // bitmask by device->idx, guarded by host_allocations_mutex
 
     bool multi_device = false;
+    bool allreduce_disabled = false;
 };
 
 typedef void (*ggml_vk_func_t)(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst);

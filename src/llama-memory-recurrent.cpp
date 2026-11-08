@@ -188,6 +188,7 @@ void llama_memory_recurrent::clear(bool data) {
         cells[i].seq_id.clear();
         cells[i].src = -1;
         cells[i].tail = -1;
+        cells[i].rs_max = 0;
     }
 
     head = 0;
@@ -236,7 +237,7 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
         if (tail_id >= 0) {
             auto & cell = cells[tail_id];
 
-            // partial rollback via per-token snapshot index (bounded by n_rs_seq)
+            // partial rollback via per-token snapshot index (bounded by the snapshots of the last ubatch)
             if (0 < p0 && p0 <= cell.pos && p1 > cell.pos) {
                 // a cell shared by several sequences cannot move back for only one of them
                 if (cell.seq_id.size() > 1) {
@@ -250,7 +251,9 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
                 const llama_pos rollback = cell.pos - (p0 - 1);
                 // pending rollback is single-use
                 const bool pending = rs_idx[seq_id] != 0;
-                if (!pending && rollback >= 1 && rollback <= (llama_pos) n_rs_seq) {
+                // replay keeps the records of the last min(n - 1, n_rs_seq) tokens of every ubatch (checked below);
+                // the snapshot path only has those its last ubatch guarantees (rs_max)
+                if (!pending && rollback >= 1 && rollback <= (llama_pos) (rpl ? n_rs_seq : cell.rs_max)) {
                     if (rpl) {
                         // ARC-LAB replay: only the tokens that left a record can be rolled back
                         if ((uint32_t) rollback > rpl_n[seq_id]) {
@@ -739,6 +742,7 @@ bool llama_memory_recurrent::find_slot(const llama_ubatch & ubatch) {
                 __func__, last_pos, cell.pos, ubatch.seq_id[i][0], n_seq_tokens);
         }
         cell.pos = last_pos;
+        cell.rs_max = n_seq_tokens <= n_rs_seq + 1 ? n_seq_tokens - 1 : 0;
         cell.seq_id.clear();
         for (int32_t j = 0; j < ubatch.n_seq_id[i]; ++j) {
             const llama_seq_id seq_id = ubatch.seq_id[i][j];
